@@ -1,31 +1,50 @@
 #include <Arduino.h>
-#include <SPI.h>
+#include <esp_log.h>
 #include <HardwareSerial.h>
+#include <TaskScheduler.h>
 
-const int BUFFER_SIZE = 100;
+
 const int MAX_LINES = 4;
-int dataArray[BUFFER_SIZE];
 int dataIndex = 0;
 
 struct sensorData
 {
-  int values[34];
+  int grimmValues[34];
 };
 
-sensorData grimmData;
-void printSensorData(const sensorData &data);
+sensorData data;
 
 
 HardwareSerial grimmSerial(2);
 
+// Function prototypes
+void processGrimmData(void);
+
+// TaskScheduler setup
+Task t_Grimm2Struct(TASK_IMMEDIATE, TASK_FOREVER, &processGrimmData);
+Scheduler runner;
+
 void setup() {
   Serial.begin(9600);
   grimmSerial.begin(9600, SERIAL_8N1, 16, -1);
+
+  // scheduler init
+  runner.init();
+  
+  runner.addTask(t_Grimm2Struct);
+
+  t_Grimm2Struct.enable();
+
 }
 
 void loop() {
 
-  if (grimmSerial.available()) {
+  runner.execute();
+  
+}
+
+void processGrimmData(void) {
+    if (grimmSerial.available()) {
     // Array leeren
     dataIndex = 0;
     
@@ -38,7 +57,7 @@ void loop() {
       if (grimmSerial.available()) {
         String line = grimmSerial.readStringUntil('\n');
         line.trim(); // Entfernt führende und nachgestellte Leerzeichen
-        Serial.println(line);
+        ESP_LOGD("Grimm RAW Outputline", "%s", line.c_str());
 
         if (linesRead == 0) {
           // Überprüfen, ob die erste Zeile einer neuen Indexgruppe korrekt ist
@@ -111,7 +130,7 @@ void loop() {
             if (!((linesRead == 2 && currentNumberCount == numberCount) ||
                   (linesRead == 3 && currentNumberCount == numberCount) ||
                   (linesRead == 2 && currentNumberCount == 1))) {
-              dataArray[dataIndex++] = number;
+              data.grimmValues[dataIndex++] = number;
             }
           }
           
@@ -126,35 +145,26 @@ void loop() {
         }
         
         // Überprüfe und entferne den doppelten Wert zwischen der zweiten und dritten Zeile
-        //if (linesRead == 2 && dataIndex > 0 && dataArray[dataIndex - 1] == dataArray[dataIndex - 2]) {
+        //if (linesRead == 2 && dataIndex > 0 && data.grimmValues[dataIndex - 1] == data.grimmValues[dataIndex - 2]) {
         //  dataIndex--; // Entferne den doppelten ersten Wert der dritten Zeile
         //}
         
         linesRead++;
       }
     }
-    
-    if (validSet && linesRead == MAX_LINES) {
-      // Ausgabe des Arrays über den seriellen Monitor
-      for (int i = 0; i < dataIndex; i++) {
-        Serial.print(dataArray[i]);
-        if (i < dataIndex - 1) {
-          Serial.print(", ");
+    #if CORE_DEBUG_LEVEL >= 4
+        if (validSet && linesRead == MAX_LINES) {
+          // Ausgabe des Arrays über den seriellen Monitor
+          for (int i = 0; i < dataIndex; i++) {
+            Serial.printf("%d", data.grimmValues[i]);
+            if (i < dataIndex - 1) {
+              Serial.printf(", ");
+            }
+          }
+          Serial.printf("\n");
+        } else {
+          ESP_LOGD("Grimm Data", "Invalid data set\n");
         }
-      }
-      Serial.println();
-    } else {
-      Serial.println("Ungültiges Datenset");
-    }
+    #endif
   }
-  
-}
-
-void printSensorData(const sensorData &data) {
-  Serial.println("Sensor Data:");
-  for (int i = 0; i < sizeof(data.values) / sizeof(data.values[0]); i++) {
-    Serial.print(data.values[i]);
-    Serial.print(", ");
-  }
-  Serial.println();
 }
