@@ -1,39 +1,77 @@
 #include <Arduino.h>
+#include <Wire.h>
+#include <SPI.h>
 #include <esp_log.h>
 #include <HardwareSerial.h>
 #include <TaskScheduler.h>
+#include <SoftwareSerial.h>
+#include <Adafruit_Sensor.h>
+#include <Adafruit_BME280.h>
 
+//Connections
+#define grimm_RX 16
+#define partector_RX 17
+// BME280 Vin -> 3.3V; SCK -> SCL; SDI -> SDA; GND -> GND
 
+//grimm varaiables
 const int MAX_LINES = 4;
 int dataIndex = 0;
 
+// Struct for the sensor data
 struct sensorData
 {
   int grimmValues[34];
+  int partectorNumber;  // Parts/cm³
+  int partectorDiam;    // nm
+  float partectorMass;  // µg/m³
+  float temperature;    // °C
+  float humidity;       // %
+  float pressure;       // hPa
+  float altitude;       // m
 };
 
 sensorData data;
 
-
+// HW Serial for the Grimm sensor UART2
 HardwareSerial grimmSerial(2);
+// SW Serial for the partector2
+EspSoftwareSerial::UART partectorSerial;
+
+// BME280 sensor
+Adafruit_BME280 bme; // I2C
+#define SEALEVELPRESSURE_HPA (1013.25)
 
 // Function prototypes
 void processGrimmData(void);
+void processPartectorData(void);
+void processBMEData(void);
 
 // TaskScheduler setup
 Task t_Grimm2Struct(TASK_IMMEDIATE, TASK_FOREVER, &processGrimmData);
+Task t_Partector2(TASK_IMMEDIATE, TASK_FOREVER, &processPartectorData);
+Task t_BME280(1000, TASK_FOREVER, &processBMEData);
 Scheduler runner;
 
 void setup() {
   Serial.begin(9600);
-  grimmSerial.begin(9600, SERIAL_8N1, 16, -1);
+  grimmSerial.begin(9600, SERIAL_8N1, grimm_RX, -1);
+  partectorSerial.begin(38400, EspSoftwareSerial::SWSERIAL_8N1, partector_RX, -1, false, 256);
+
+  //init BME280
+  if (!bme.begin(0x77)) {
+    ESP_LOGD("BME280", "Could not find a valid BME280 sensor, check wiring!");
+  }
 
   // scheduler init
   runner.init();
   
-  runner.addTask(t_Grimm2Struct);
+  //runner.addTask(t_Grimm2Struct);
+  runner.addTask(t_Partector2);
+  runner.addTask(t_BME280);
 
-  t_Grimm2Struct.enable();
+  //t_Grimm2Struct.enable();
+  t_Partector2.enable();
+  t_BME280.enable();
 
 }
 
@@ -44,7 +82,7 @@ void loop() {
 }
 
 void processGrimmData(void) {
-    if (grimmSerial.available()) {
+  if (grimmSerial.available()) {
     // Array leeren
     dataIndex = 0;
     
@@ -167,4 +205,60 @@ void processGrimmData(void) {
         }
     #endif
   }
+}
+
+void processPartectorData(void) {
+  if (partectorSerial.available()) {
+/*     char c = partectorSerial.read();
+    Serial.print(c, HEX);
+    Serial.print(" ");
+    if (c == '\n') {
+      Serial.println();
+    } */
+    String line = partectorSerial.readStringUntil('\n');
+    line.trim();
+    ESP_LOGD("Partector RAW Outputline", "%s", line.c_str());
+
+    //parse PartectorData
+    int startIndex = 0;
+    int endIndex = line.indexOf('\t');
+    int index = 0;
+
+    while(endIndex != -1 && index <=5) {
+      String value = line.substring(startIndex, endIndex);
+      value.trim();
+      switch (index) {
+        case 1: //number
+          data.partectorNumber = value.toInt();
+          break;
+        case 2: //diameter
+          data.partectorDiam = value.toInt();
+          break;
+        case 5: //mass
+          data.partectorMass = value.toFloat();
+          break;
+      }
+      startIndex = endIndex + 1;
+      endIndex = line.indexOf('\t', startIndex);
+      ++index;
+    }
+    #if CORE_DEBUG_LEVEL >= 4
+      Serial.printf("Partector Number: %d\n", data.partectorNumber);
+      Serial.printf("Partector Diameter: %d\n", data.partectorDiam);
+      Serial.printf("Partector Mass: %f\n", data.partectorMass);
+    #endif
+  }
+}
+
+void processBMEData(void) {
+  data.temperature = bme.readTemperature();
+  data.humidity = bme.readHumidity();
+  data.pressure = bme.readPressure() / 100.0F;
+  data.altitude = bme.readAltitude(SEALEVELPRESSURE_HPA);
+  #if CORE_DEBUG_LEVEL >= 4
+    Serial.printf("Temperature: %f\n", data.temperature);
+    Serial.printf("Humidity: %f\n", data.humidity);
+    Serial.printf("Pressure: %f\n", data.pressure);
+    Serial.printf("Altitude: %f\n", data.altitude);
+  #endif
 }
