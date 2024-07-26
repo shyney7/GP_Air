@@ -7,17 +7,21 @@
 #include <SoftwareSerial.h>
 #include <Adafruit_Sensor.h>
 #include <Adafruit_BME280.h>
+#include <SparkFun_SCD30_Arduino_Library.h>
+#include <U8g2lib.h>
 
-//Connections
+// PIN Connections ----------------------------------------------------------
 #define grimm_RX 16
 #define partector_RX 17
 // BME280 Vin -> 3.3V; SCK -> SCL; SDI -> SDA; GND -> GND
+//---------------------------------------------------------------------------
 
-//grimm varaiables
+//GRIMM varaiables ----------------------------------------------------------
 const int MAX_LINES = 4;
 int dataIndex = 0;
+//---------------------------------------------------------------------------
 
-// Struct for the sensor data
+// Struct for the sensor data------------------------------------------------
 struct sensorData
 {
   int grimmValues[34];
@@ -28,38 +32,68 @@ struct sensorData
   float humidity;       // %
   float pressure;       // hPa
   float altitude;       // m
+  uint16_t co2;         // ppm
 };
 
 sensorData data;
+//----------------------------------------------------------------------------
 
-// HW Serial for the Grimm sensor UART2
+// HW Serial for the Grimm sensor UART2 --------------------------------------
 HardwareSerial grimmSerial(2);
-// SW Serial for the partector2
+//----------------------------------------------------------------------------
+// SW Serial for the partector2 ----------------------------------------------
 EspSoftwareSerial::UART partectorSerial;
+//----------------------------------------------------------------------------
 
-// BME280 sensor
+// BME280 sensor -------------------------------------------------------------
 Adafruit_BME280 bme; // I2C
 #define SEALEVELPRESSURE_HPA (1013.25)
+//----------------------------------------------------------------------------
 
-// Function prototypes
+// SCD30 sensor --------------------------------------------------------------
+SCD30 co2;
+//----------------------------------------------------------------------------
+
+// OLED Display --------------------------------------------------------------
+U8G2_SSD1306_128X32_UNIVISION_F_HW_I2C u8g2(U8G2_R2); //rotation R2
+//----------------------------------------------------------------------------
+
+// Function prototypes -------------------------------------------------------
 void processGrimmData(void);
 void processPartectorData(void);
 void processBMEData(void);
+void processCO2Data(void);
+void drawData2OLED(void);
+//----------------------------------------------------------------------------
 
-// TaskScheduler setup
+// TaskScheduler setup -------------------------------------------------------
 Task t_Grimm2Struct(TASK_IMMEDIATE, TASK_FOREVER, &processGrimmData);
 Task t_Partector2(TASK_IMMEDIATE, TASK_FOREVER, &processPartectorData);
 Task t_BME280(1000, TASK_FOREVER, &processBMEData);
+Task t_CO2(1000, TASK_FOREVER, &processCO2Data); //CO2 Data is only available every 2 seconds
+Task t_OLED(1000, TASK_FOREVER, &drawData2OLED);
 Scheduler runner;
+//----------------------------------------------------------------------------
 
 void setup() {
   Serial.begin(9600);
   grimmSerial.begin(9600, SERIAL_8N1, grimm_RX, -1);
   partectorSerial.begin(38400, EspSoftwareSerial::SWSERIAL_8N1, partector_RX, -1, false, 256);
 
+  Wire.begin();
+
+  u8g2.begin();
+  u8g2.setFont(u8g2_font_tiny5_tr);
+  u8g2.clearBuffer();
+
   //init BME280
   if (!bme.begin(0x77)) {
     ESP_LOGD("BME280", "Could not find a valid BME280 sensor, check wiring!");
+  }
+
+  //scd30 init
+  if (co2.begin() == false) {
+    ESP_LOGD("SCD30", "Sensor not detected. Please check your wiring.");
   }
 
   // scheduler init
@@ -68,10 +102,14 @@ void setup() {
   //runner.addTask(t_Grimm2Struct);
   runner.addTask(t_Partector2);
   runner.addTask(t_BME280);
+  runner.addTask(t_CO2);
+  runner.addTask(t_OLED);
 
   //t_Grimm2Struct.enable();
   t_Partector2.enable();
   t_BME280.enable();
+  t_CO2.enable();
+  t_OLED.enable();
 
 }
 
@@ -261,4 +299,36 @@ void processBMEData(void) {
     Serial.printf("Pressure: %f\n", data.pressure);
     Serial.printf("Altitude: %f\n", data.altitude);
   #endif
+}
+
+void processCO2Data(void) {
+  if (co2.dataAvailable()) {
+    data.co2 = co2.getCO2();
+    ESP_LOGD("CO2", "CO2: %d ppm", data.co2);
+  }
+}
+
+void drawData2OLED(void) {
+  u8g2.clearBuffer();
+  u8g2.setDisplayRotation(U8G2_R1);
+  u8g2.setCursor(0, 10);
+  u8g2.print("Temperature:");
+  u8g2.setCursor(0, 20);
+  u8g2.print(data.temperature);
+  u8g2.print("C");
+  u8g2.setCursor(0, 30);
+  u8g2.print("Humidity: ");
+  u8g2.setCursor(0, 40);
+  u8g2.print(data.humidity);
+  u8g2.print("%");
+  u8g2.setCursor(0, 50);
+  u8g2.print("Partector");
+  u8g2.setCursor(0, 60);
+  u8g2.print(data.partectorNumber);
+  u8g2.setCursor(0, 70);
+  u8g2.print("CO2: ");
+  u8g2.setCursor(0, 80);
+  u8g2.print(data.co2);
+  u8g2.print("ppm");
+  u8g2.sendBuffer();
 }
