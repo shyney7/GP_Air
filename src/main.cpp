@@ -9,10 +9,15 @@
 #include <Adafruit_BME280.h>
 #include <SparkFun_SCD30_Arduino_Library.h>
 #include <U8g2lib.h>
+#include <RF24.h>
+#include <RF24Network.h>
+#include <RF24Mesh.h>
 
 // PIN Connections ----------------------------------------------------------
 #define grimm_RX 16
 #define partector_RX 17
+#define rf24_CE_PIN 40
+#define rf24_CSN_PIN 39
 // BME280 Vin -> 3.3V; SCK -> SCL; SDI -> SDA; GND -> GND
 //---------------------------------------------------------------------------
 
@@ -58,12 +63,18 @@ SCD30 co2;
 U8G2_SSD1306_128X32_UNIVISION_F_HW_I2C u8g2(U8G2_R2); //rotation R2
 //----------------------------------------------------------------------------
 
+// RF24 Mesh Network ---------------------------------------------------------
+RF24 radio(rf24_CE_PIN, rf24_CSN_PIN);
+RF24Network network(radio);
+RF24Mesh mesh(radio, network);
+
 // Function prototypes -------------------------------------------------------
 void processGrimmData(void);
 void processPartectorData(void);
 void processBMEData(void);
 void processCO2Data(void);
 void drawData2OLED(void);
+void send2Mesh(void);
 //----------------------------------------------------------------------------
 
 // TaskScheduler setup -------------------------------------------------------
@@ -72,6 +83,7 @@ Task t_Partector2(TASK_IMMEDIATE, TASK_FOREVER, &processPartectorData);
 Task t_BME280(1000, TASK_FOREVER, &processBMEData);
 Task t_CO2(1000, TASK_FOREVER, &processCO2Data); //CO2 Data is only available every 2 seconds
 Task t_OLED(1000, TASK_FOREVER, &drawData2OLED);
+Task t_Mesh(1000, TASK_FOREVER, &send2Mesh);
 Scheduler runner;
 //----------------------------------------------------------------------------
 
@@ -96,6 +108,20 @@ void setup() {
     ESP_LOGD("SCD30", "Sensor not detected. Please check your wiring.");
   }
 
+  //init RF24
+  mesh.setNodeID(1);
+  radio.begin();
+  radio.setPALevel(RF24_PA_MAX);
+  if(!mesh.begin(MESH_DEFAULT_CHANNEL, RF24_250KBPS)) {
+    if (radio.isChipConnected()) {
+      do {
+        ESP_LOGD("RF24MESH", "Could not connect to mesh network. Retrying...");
+      } while (mesh.renewAddress() == MESH_DEFAULT_ADDRESS);
+    } else {
+      ESP_LOGD("RF24MESH", "Radio not connected. Please check your wiring.");
+    }
+  }
+
   // scheduler init
   runner.init();
   
@@ -104,17 +130,20 @@ void setup() {
   runner.addTask(t_BME280);
   runner.addTask(t_CO2);
   runner.addTask(t_OLED);
+  runner.addTask(t_Mesh);
 
   //t_Grimm2Struct.enable();
   t_Partector2.enable();
   t_BME280.enable();
   t_CO2.enable();
   t_OLED.enable();
+  t_Mesh.enable();
 
 }
 
 void loop() {
 
+  mesh.update();
   runner.execute();
   
 }
@@ -331,4 +360,20 @@ void drawData2OLED(void) {
   u8g2.print(data.co2);
   u8g2.print("ppm");
   u8g2.sendBuffer();
+}
+
+// Send data to the mesh network
+void send2Mesh(void) {
+  if (!mesh.write(&data, 'A', sizeof(data))) {
+    if (!mesh.checkConnection()) {
+      ESP_LOGD("send2Mesh", "Lost connection to mesh network. Trying to renew address...");
+      if (mesh.renewAddress() == MESH_DEFAULT_ADDRESS) {
+        mesh.begin(MESH_DEFAULT_CHANNEL, RF24_250KBPS);
+      }
+    } else {
+      ESP_LOGD("send2Mesh", "Send fail, Test OK");
+    }
+  } else {
+    ESP_LOGD("send2Mesh", "Send success");
+  }
 }
