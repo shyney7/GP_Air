@@ -9,10 +9,16 @@
 #include <Adafruit_BME280.h>
 #include <SparkFun_SCD30_Arduino_Library.h>
 #include <U8g2lib.h>
+#include <LoRa.h>
 
 // PIN Connections ----------------------------------------------------------
-#define grimm_RX 16
-#define partector_RX 17
+#define grimm_RX 16       // Grimm RX
+#define partector_RX 17   // Partector RX
+//RFM95W LoRa Module
+#define BAND 866E6
+#define LORA_DIO0 2
+#define LORA_RST 3
+#define LORA_CS 8
 // BME280 Vin -> 3.3V; SCK -> SCL; SDI -> SDA; GND -> GND
 //---------------------------------------------------------------------------
 
@@ -24,7 +30,7 @@ int dataIndex = 0;
 // Struct for the sensor data------------------------------------------------
 struct sensorData
 {
-  int grimmValues[34];
+  int grimmValues[31];
   int partectorNumber;  // Parts/cm³
   int partectorDiam;    // nm
   float partectorMass;  // µg/m³
@@ -64,6 +70,7 @@ void processPartectorData(void);
 void processBMEData(void);
 void processCO2Data(void);
 void drawData2OLED(void);
+void sendLoRaData(void);
 //----------------------------------------------------------------------------
 
 // TaskScheduler setup -------------------------------------------------------
@@ -72,6 +79,7 @@ Task t_Partector2(TASK_IMMEDIATE, TASK_FOREVER, &processPartectorData);
 Task t_BME280(1000, TASK_FOREVER, &processBMEData);
 Task t_CO2(1000, TASK_FOREVER, &processCO2Data); //CO2 Data is only available every 2 seconds
 Task t_OLED(1000, TASK_FOREVER, &drawData2OLED);
+Task t_LoRa(2000, TASK_FOREVER, &sendLoRaData);
 Scheduler runner;
 //----------------------------------------------------------------------------
 
@@ -79,6 +87,14 @@ void setup() {
   Serial.begin(9600);
   grimmSerial.begin(9600, SERIAL_8N1, grimm_RX, -1);
   partectorSerial.begin(38400, EspSoftwareSerial::SWSERIAL_8N1, partector_RX, -1, false, 256);
+
+  //LoRa init
+  SPI.begin(SCK, MISO, MOSI, LORA_CS);
+  LoRa.setPins(LORA_CS, LORA_RST, LORA_DIO0);
+  if (!LoRa.begin(BAND)) {
+    ESP_LOGD("LoRa init", "Starting LoRa failed!");
+  }
+  ESP_LOGD("LoRa init", "LoRa init done!");
 
   Wire.begin();
 
@@ -99,17 +115,19 @@ void setup() {
   // scheduler init
   runner.init();
   
-  //runner.addTask(t_Grimm2Struct);
+  runner.addTask(t_Grimm2Struct);
   runner.addTask(t_Partector2);
   runner.addTask(t_BME280);
   runner.addTask(t_CO2);
   runner.addTask(t_OLED);
+  runner.addTask(t_LoRa);
 
-  //t_Grimm2Struct.enable();
+  t_Grimm2Struct.enable();
   t_Partector2.enable();
   t_BME280.enable();
   t_CO2.enable();
   t_OLED.enable();
+  t_LoRa.enable();
 
 }
 
@@ -238,6 +256,7 @@ void processGrimmData(void) {
             }
           }
           Serial.printf("\n");
+          Serial.printf("Index: %d\n", dataIndex);
         } else {
           ESP_LOGD("Grimm Data", "Invalid data set\n");
         }
@@ -331,4 +350,11 @@ void drawData2OLED(void) {
   u8g2.print(data.co2);
   u8g2.print("ppm");
   u8g2.sendBuffer();
+}
+
+//send data via LoRa
+void sendLoRaData(void) {
+  LoRa.beginPacket();
+  LoRa.write((uint8_t*)&data, sizeof(data));
+  LoRa.endPacket();
 }
