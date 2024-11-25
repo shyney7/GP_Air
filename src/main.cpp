@@ -10,6 +10,7 @@
 #include <SparkFun_SCD30_Arduino_Library.h>
 #include <U8g2lib.h>
 #include <LoRa.h>
+#include <SdFat.h>
 
 // PIN Connections ----------------------------------------------------------
 #define grimm_RX 16       // Grimm RX
@@ -19,6 +20,7 @@
 #define LORA_DIO0 2
 #define LORA_RST 3
 #define LORA_CS 8
+#define SD_CS_PIN 46
 // BME280 Vin -> 3.3V; SCK -> SCL; SDI -> SDA; GND -> GND
 //---------------------------------------------------------------------------
 
@@ -64,6 +66,24 @@ SCD30 co2;
 U8G2_SSD1306_128X32_UNIVISION_F_HW_I2C u8g2(U8G2_R2); //rotation R2
 //----------------------------------------------------------------------------
 
+// SD Card -------------------------------------------------------------------
+const int8_t DISABLE_CHIP_SELECT = 8;
+#define SPI_CLOCK SD_SCK_MHZ(50);
+SdFat32 sd;
+File32 file;
+
+// Try to select the best SD card configuration.
+#define SD_CONFIG SdSpiConfig(SD_CS_PIN, SHARED_SPI, SPI_CLOCK)
+
+void disableLoRaSPI() {
+  pinMode(LORA_CS, OUTPUT);
+  digitalWrite(LORA_CS, HIGH);
+}
+
+
+String filename = "";
+//----------------------------------------------------------------------------
+
 // Function prototypes -------------------------------------------------------
 void processGrimmData(void);
 void processPartectorData(void);
@@ -71,6 +91,7 @@ void processBMEData(void);
 void processCO2Data(void);
 void drawData2OLED(void);
 void sendLoRaData(void);
+void writeData2SD(void);
 //----------------------------------------------------------------------------
 
 // TaskScheduler setup -------------------------------------------------------
@@ -80,6 +101,7 @@ Task t_BME280(1000, TASK_FOREVER, &processBMEData);
 Task t_CO2(1000, TASK_FOREVER, &processCO2Data); //CO2 Data is only available every 2 seconds
 Task t_OLED(1000, TASK_FOREVER, &drawData2OLED);
 Task t_LoRa(2000, TASK_FOREVER, &sendLoRaData);
+Task t_SD(1000, TASK_FOREVER, &writeData2SD);
 Scheduler runner;
 //----------------------------------------------------------------------------
 
@@ -112,6 +134,30 @@ void setup() {
     ESP_LOGD("SCD30", "Sensor not detected. Please check your wiring.");
   }
 
+  //SD Card init
+  filename = "test1.csv";
+  if (!sd.begin(SD_CS_PIN, SPI_FULL_SPEED)) {
+    ESP_LOGD("SD Card", "SD Card init failed!");
+  }
+
+  if (sd.exists(filename.c_str())) {
+    ESP_LOGD("SD Card cecks", "File exists!");
+  }
+  else {
+    // create file
+    if (!file.open(filename.c_str(), O_WRONLY | O_CREAT | O_EXCL)) {
+      ESP_LOGD("SD Card File Creation", "File creation failed!");
+    } else {
+      ESP_LOGD("SD Card File Creation", "File created!");
+       file.println("Datetime,Temperature,RedServoStatus,BlueServoStatus,Latitude,Longitude");
+    }
+
+    if (!file.sync() || file.getWriteError()) {
+      ESP_LOGD("SD Card File Sync", "File sync failed!");
+    }
+    file.close();
+  }
+
   // scheduler init
   runner.init();
   
@@ -121,6 +167,7 @@ void setup() {
   runner.addTask(t_CO2);
   runner.addTask(t_OLED);
   runner.addTask(t_LoRa);
+  runner.addTask(t_SD);
 
   t_Grimm2Struct.enable();
   t_Partector2.enable();
@@ -128,6 +175,7 @@ void setup() {
   t_CO2.enable();
   t_OLED.enable();
   t_LoRa.enable();
+  t_SD.enable();
 
 }
 
@@ -357,4 +405,23 @@ void sendLoRaData(void) {
   LoRa.beginPacket();
   LoRa.write((uint8_t*)&data, sizeof(data));
   LoRa.endPacket();
+}
+
+void writeData2SD(void) {
+  
+  if (!file.open(filename.c_str(), O_WRONLY | O_CREAT | O_AT_END)) {
+    ESP_LOGD("SDWrite Open Fiel", "File open failed!");
+  }
+
+  // write data to file
+  String sdData = String(data.temperature) + "," + String(data.humidity) + "," + String(data.pressure) + "," + String(data.altitude) + "," + String(data.co2) + "," + String(data.partectorNumber) + "," + String(data.partectorDiam) + "," + String(data.partectorMass);
+  file.println(sdData);
+
+  if (!file.sync() || file.getWriteError()) {
+    ESP_LOGD("SDWrite Sync File", "File sync or write failed!");
+  }
+
+  file.close();
+  ESP_LOGD("SDWrite", "Data written to SD Card!");
+
 }
