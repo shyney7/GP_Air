@@ -33,19 +33,22 @@
 const int MAX_LINES = 4;
 int dataIndex = 0;
 bool newGrimmValuesReceived = false;
+int grimmValues[31];
 //---------------------------------------------------------------------------
 
 // Struct for the sensor data------------------------------------------------
 struct sensorData
 {
-  int grimmValues[31];
   int partectorNumber;  // Parts/cm³
   int partectorDiam;    // nm
   float partectorMass;  // µg/m³
+  float grimmValue;     // Particles/cm³
   float temperature;    // °C
   float humidity;       // %
   float pressure;       // hPa
   float altitude;       // m
+  float latitude;       // °
+  float longitude;      // °
   uint16_t co2;         // ppm
 };
 
@@ -114,6 +117,7 @@ void oledLoraErr(void);                     // Display error message on OLED
 void oledSDErr(void);
 void oledBMEErr(void);
 void oledCO2Err(void);
+float calculateGrimmValue(int *grimmValues);
 //----------------------------------------------------------------------------
 
 // TaskScheduler setup -------------------------------------------------------
@@ -149,6 +153,8 @@ void setup() {
 
   //wait for GPS fix
   gpsWait4Fix();
+  data.longitude = gpsDecimal(GPS.longitude, GPS.lon);
+  data.latitude = gpsDecimal(GPS.latitude, GPS.lat);
 
   //LoRa init
   SPI.begin(SCK, MISO, MOSI, LORA_CS);
@@ -241,6 +247,15 @@ void loop() {
   
 }
 
+//calculate the Grimm Value = sum of all 31 values / 1000
+float calculateGrimmValue(int *grimmValues) {
+  float grimmValue = 0;
+  for (int i(0); i < 31; i++) {
+    grimmValue += grimmValues[i];
+  }
+  return grimmValue / 1000;
+}
+
 void processGrimmData(void) {
   if (grimmSerial.available()) {
     // Array leeren
@@ -328,7 +343,7 @@ void processGrimmData(void) {
             if (!((linesRead == 2 && currentNumberCount == numberCount) ||
                   (linesRead == 3 && currentNumberCount == numberCount) ||
                   (linesRead == 2 && currentNumberCount == 1))) {
-              data.grimmValues[dataIndex++] = number;
+              grimmValues[dataIndex++] = number;
             }
           }
           
@@ -353,13 +368,14 @@ void processGrimmData(void) {
     // set flag for new data
     if (validSet && linesRead == MAX_LINES) {
       newGrimmValuesReceived = true;
+      data.grimmValue = calculateGrimmValue(grimmValues);
     }
     // Debug-Ausgabe
     #if CORE_DEBUG_LEVEL >= 4
         if (validSet && linesRead == MAX_LINES) {
           // Ausgabe des Arrays über den seriellen Monitor
           for (int i = 0; i < dataIndex; i++) {
-            Serial.printf("%d", data.grimmValues[i]);
+            Serial.printf("%d", grimmValues[i]);
             if (i < dataIndex - 1) {
               Serial.printf(", ");
             }
@@ -416,12 +432,13 @@ void processPartectorData(void) {
   }
 }
 
+// retrieve BME280 data and save it to the data struct
 void processBMEData(void) {
   data.temperature = bme.readTemperature();
   data.humidity = bme.readHumidity();
   data.pressure = bme.readPressure() / 100.0F;
   //data.altitude = bme.readAltitude(SEALEVELPRESSURE_HPA);
-  data.altitude = GPS.altitude;
+  //data.altitude = GPS.altitude;
   #if CORE_DEBUG_LEVEL >= 4
     Serial.printf("Temperature: %f\n", data.temperature);
     Serial.printf("Humidity: %f\n", data.humidity);
@@ -430,6 +447,7 @@ void processBMEData(void) {
   #endif
 }
 
+// get CO2 data from SCD30 if available (usually every 2 seconds)
 void processCO2Data(void) {
   if (co2.dataAvailable()) {
     data.co2 = co2.getCO2();
@@ -437,6 +455,7 @@ void processCO2Data(void) {
   }
 }
 
+// draw Temperature, Humidity, CO2, Partector Data and Time on OLED
 void drawData2OLED(void) {
   u8g2.clearBuffer();
   u8g2.setDisplayRotation(U8G2_R1);
@@ -473,11 +492,17 @@ void drawData2OLED(void) {
 
 //send data via LoRa
 void sendLoRaData(void) {
+  //insert Position data before sending data
+  data.latitude = gpsDecimal(GPS.latitude, GPS.lat);
+  data.longitude = gpsDecimal(GPS.longitude, GPS.lon);
+  data.altitude = GPS.altitude;
+  // send data
   LoRa.beginPacket();
   LoRa.write((uint8_t*)&data, sizeof(data));
   LoRa.endPacket();
 }
 
+// write raw data to SD Card
 void writeData2SD(void) {
   
   if (!file.open(filename.c_str(), O_WRONLY | O_CREAT | O_AT_END)) {
@@ -487,14 +512,14 @@ void writeData2SD(void) {
   // write data to file
   String sdData = String(GPS.year) + "." + String(GPS.month) + "." + String(GPS.day) + "T";
   sdData += String(GPS.hour) + "." + String(GPS.minute) + "." + String(GPS.seconds) + ",";
-  sdData += String(gpsDecimal(GPS.latitude, GPS.lat), 6) + "," + String(gpsDecimal(GPS.longitude, GPS.lon), 6) + ",";
+  sdData += String(data.latitude, 6) + "," + String(data.longitude, 6) + ",";
   sdData += String(data.temperature) + "," + String(data.humidity) + "," + String(data.pressure) + "," + String(data.altitude) + "," + String(data.co2) + "," + String(data.partectorNumber) + "," + String(data.partectorDiam) + "," + String(data.partectorMass) + ",";
   if (newGrimmValuesReceived) {
     for (int i(0); i < 31; ++i) {
       if (i == 30) {
-        sdData += String(data.grimmValues[i]);
+        sdData += String(grimmValues[i]);
       } else {
-        sdData += String(data.grimmValues[i]) + ",";
+        sdData += String(grimmValues[i]) + ",";
       }
     }
     newGrimmValuesReceived = false;
@@ -514,6 +539,7 @@ void writeData2SD(void) {
 
 }
 
+// convert GPS data to decimaldegrees
 float gpsDecimal(float gps, char sector) {
   float decimal = 0;
   int degrees = int(gps / 100);
@@ -525,6 +551,7 @@ float gpsDecimal(float gps, char sector) {
   return decimal;
 }
 
+// needs to run as often as possible acording to Adafruit_GPS library documentation
 void gpsRunFrequently(void) {
   char c = GPS.read();
   if (GPS.newNMEAreceived()) {
