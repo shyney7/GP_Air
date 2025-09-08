@@ -1,0 +1,11 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+authors:
+- family-names: "Oliveira Brito"
+  given-names: "Marcel"
+  orcid: "https://orcid.org/0000-0001-9879-5638"
+title: "Sicheres Schadstoffmonitoring per UAV in Gefahrenszenarien für Einsatzkräfte (SiSchaMo)"
+version: 1.0.0
+doi: doi.org/10.34657/18646
+date-released: 2025-06-30
+url: "https://github.com/shyney7/GP_Air"
